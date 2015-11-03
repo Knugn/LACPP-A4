@@ -1,0 +1,12 @@
+
+
+
+
+
+%%
+%% solve all puzzles in the (hardcoded) input file
+%%
+-spec solve_all() -> [{name(), solution()}].
+solve_all() ->
+  {ok, Puzzles} = file:consult(?PROBLEMS),
+  [{Name, solve(M)} || {Name, M} <- Puzzles].
