@@ -10,7 +10,7 @@
 %% -------------------------------------------------------------------
 -module(sudoku).
 
--export([benchmarks/0, solve_all/0, solve/1,solve_all_parallel/0]).
+-export([benchmarks/0, solve_all/0, solve/1,solve_all_parallel/0,benchmarks_parallel/0]).
 
 -ifdef(PROPER).
 -include_lib("proper/include/proper.hrl").
@@ -31,7 +31,7 @@
 %%
 %% benchmarking code
 %%
--define(EXECUTIONS, 42).
+-define(EXECUTIONS, 5).
 -define(PROBLEMS,  "sudoku_problems.txt").
 -define(SOLUTIONS, "sudoku_solutions.txt").
 
@@ -54,21 +54,104 @@ solve_all_parallel() ->
 
 solve_parallel_task(Pid,Puzzle) ->
   {Name,M} = Puzzle,
-  Pid ! {Name,solve(M)}.
+  Pid ! {Name,solve_parallel(M)}.
 
+
+
+refine_rows_parallel(no_solution) ->
+  no_solution;
+refine_rows_parallel(M) ->
+  Pid = self(),
+  Refs = [fun () -> Ref = make_ref(),
+	  spawn(refine_row_task(Pid,Ref,R)), Ref end || R <- M],
+  Refined = [receive {Ref,Row} -> Row end || Ref <- Refs],
+  case lists:member(no_solution, Refined) of
+    true -> no_solution;
+    false -> Refined
+  end.
+
+
+refine_row_task(Pid,Ref,Row) ->
+  Pid ! {Ref,refine_row(Row)}.
+
+
+
+refine_parallel(M) ->
+  NewM =
+    refine_rows(
+      transpose(
+	refine_rows(
+	  transpose(
+	    unblocks(
+	      refine_rows(
+		blocks(M))))))),
+  if M =:= NewM ->
+      M;
+     true ->
+      refine_parallel(NewM)
+  end.
+
+
+
+
+solve_refined_parallel(M) ->
+  case solved(M) of
+    true ->
+      M;
+    false ->
+      solve_one_parallel(guesses_parallel(M))
+  end.
+
+
+%% given a matrix, guess an element to form a list of possible
+%% extended matrices, easiest problem first.
+
+guesses_parallel(M0) ->
+  {I, J, Guesses} = guess(M0),
+  Ms = [refine_parallel(update_element(M0, I, J, G)) || G <- Guesses],
+  SortedGuesses = lists:sort([{hard(M), M} || M <- Ms, not is_wrong(M)]),
+  [G || {_, G} <- SortedGuesses].
+
+
+
+
+solve_one_parallel([]) ->
+  no_solution;
+solve_one_parallel([M]) ->
+  solve_refined_parallel(M);
+solve_one_parallel([M|Ms]) ->
+  case solve_refined_parallel(M) of
+    no_solution ->
+      solve_one_parallel(Ms);
+    Solution ->
+      Solution
+  end.
 
 %%
-%% solve a Sudoku puzzle
+%% solve a Sudoku puzzle-------------------------------------------
 %%
 -spec solve_parallel(matrix()) -> solution().
 solve_parallel(M) ->
-  Solution = solve_refined(refine(fill(M))),
+  Solution = solve_refined_parallel(refine_parallel(fill(M))),
   case valid_solution(Solution) of
     true ->
       Solution;
     false -> % in correct puzzles should never happen
       exit({invalid_solution, Solution})
   end.
+
+
+
+
+-spec benchmarks_parallel() -> {musecs(), bm_results()}.
+benchmarks_parallel() ->
+  {ok, Problems} = file:consult(?PROBLEMS),
+  timer:tc(fun () -> benchmarks_parallel(Problems) end).
+
+-spec benchmarks_parallel([puzzle()]) -> bm_results().
+benchmarks_parallel(Puzzles) ->
+  [{Name, bm(fun() -> solve_parallel(M) end)} || {Name, M} <- Puzzles].
+
 %%---------------------------------------------------
 
 
@@ -196,6 +279,10 @@ refine_rows(M) ->
     true -> no_solution;
     false -> Refined
   end.
+
+
+    
+
 
 refine_row(Row) ->
   Entries = entries(Row),
