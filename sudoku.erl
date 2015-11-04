@@ -31,7 +31,7 @@
 %%
 %% benchmarking code
 %%
--define(EXECUTIONS, 15).
+-define(EXECUTIONS, 1).
 -define(PROBLEMS,  "sudoku_problems.txt").
 -define(SOLUTIONS, "sudoku_solutions.txt").
 
@@ -128,10 +128,9 @@ refine_rows_task_master(Pids, [Hd|Tl])   ->
 
 refine_row_task() ->
   receive {Pid,Ref,Row} -> 
-      {Pid,Ref,Row}
+      Ans = refine_row(Row),
+      Pid ! {Ref,Ans}
   end,
-  Ans = refine_row(Row),
-  Pid ! {Ref,Ans},
   refine_row_task().
 
 
@@ -148,7 +147,8 @@ refine_row_task() ->
 				   
 
 %% refine_task() ->
-%%   receive {Pid, Row} -> {Pid, Row}
+%%   receive {Pid, Row} -> 
+%{Pid, Row}
 %%   end,
 %%   Ans = refine_parallel(Row,),
 %%   Pid ! {Ans},
