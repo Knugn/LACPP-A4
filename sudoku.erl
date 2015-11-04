@@ -108,14 +108,11 @@ solve_refined_parallel(M) ->
   end.
 
 
-refine_task(Pid,Ref,  M0, I, J, G) ->
+refine_task(Pid, M0, I, J, G) ->
   Ans = refine_parallel(update_element(M0, I, J, G)),
-  Pid ! {Ref,Ans}.
+  Pid ! {Ans}.
 
-spawn_refine_parallel(Pid, M0, I, J, G)->
-  Ref = make_ref(),
-  spawn(fun () -> refine_task(Pid,Ref, M0, I, J, G) end),
-  Ref.
+  
   
 
 %% given a matrix, guess an element to form a list of possible
@@ -125,8 +122,9 @@ guesses_parallel(M0) ->
   {I, J, Guesses} = guess(M0),
  % Ms = [refine_parallel(update_element(M0, I, J, G)) || G <- Guesses],
   Pid = self(),
-  Refs = [spawn_refine_parallel(Pid,M0, I, J, G) || G <- Guesses],
-  Ms = [receive {Ref,Ans} -> Ans end || Ref <- Refs],
+%  foreach(spawn(fun () -> refine_task(Pid,M0, I, J, G) end), Guesses),
+  [spawn(fun () -> refine_task(Pid,M0, I, J, G) end) || G <- Guesses],
+  Ms = [receive {Ans} -> Ans end || _ <- Guesses],
   SortedGuesses = lists:sort([{hard(M), M} || M <- Ms, not is_wrong(M)]),
   [G || {_, G} <- SortedGuesses].
 
