@@ -52,9 +52,11 @@ solve_all_parallel() ->
   [receive {Name,M} -> {Name,M} end || {Name,_} <- Puzzles].
       
 
+
 solve_parallel_task(Pid,Puzzle) ->
   {Name,M} = Puzzle,
   Pid ! {Name,solve_parallel(M)}.
+
 
 spawn_refine_row_task(Pid,R) ->
   Ref = make_ref(),
@@ -81,7 +83,7 @@ refine_row_task(Pid,Ref,Row) ->
 
 refine_parallel(M) ->
   NewM =
-    refine_rows_parallel(
+    refine_rows(
       transpose(
 	refine_rows(
 	  transpose(
@@ -106,12 +108,25 @@ solve_refined_parallel(M) ->
   end.
 
 
+refine_task(Pid,Ref,  M0, I, J, G) ->
+  Ans = refine_parallel(update_element(M0, I, J, G)),
+  Pid ! {Ref,Ans}.
+
+spawn_refine_parallel(Pid, M0, I, J, G)->
+  Ref = make_ref(),
+  spawn(fun () -> refine_task(Pid,Ref, M0, I, J, G) end),
+  Ref.
+  
+
 %% given a matrix, guess an element to form a list of possible
 %% extended matrices, easiest problem first.
 
 guesses_parallel(M0) ->
   {I, J, Guesses} = guess(M0),
-  Ms = [refine_parallel(update_element(M0, I, J, G)) || G <- Guesses],
+ % Ms = [refine_parallel(update_element(M0, I, J, G)) || G <- Guesses],
+  Pid = self(),
+  Refs = [spawn_refine_parallel(Pid,M0, I, J, G) || G <- Guesses],
+  Ms = [receive {Ref,Ans} -> Ans end || Ref <- Refs],
   SortedGuesses = lists:sort([{hard(M), M} || M <- Ms, not is_wrong(M)]),
   [G || {_, G} <- SortedGuesses].
 
@@ -142,7 +157,6 @@ solve_parallel(M) ->
     false -> % in correct puzzles should never happen
       exit({invalid_solution, Solution})
   end.
-
 
 
 
