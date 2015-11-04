@@ -31,7 +31,7 @@
 %%
 %% benchmarking code
 %%
--define(EXECUTIONS, 40).
+-define(EXECUTIONS, 20).
 -define(PROBLEMS,  "sudoku_problems.txt").
 -define(SOLUTIONS, "sudoku_solutions.txt").
 
@@ -83,10 +83,10 @@ refine_parallel(M) ->
   NewM =
     refine_rows_parallel(
       transpose(
-	refine_rows_parallel(
+	refine_rows(
 	  transpose(
 	    unblocks(
-	      refine_rows_parallel(
+	      refine_rows(
 		blocks(M))))))),
   if M =:= NewM ->
       M;
