@@ -98,7 +98,6 @@ refine_parallel(M) ->
 
 
 
-
 solve_refined_parallel(M) ->
   case solved(M) of
     true ->
@@ -108,8 +107,8 @@ solve_refined_parallel(M) ->
   end.
 
 
-refine_task(Pid, M0, I, J, G) ->
-  Ans = refine_parallel(update_element(M0, I, J, G)),
+refine_task(Pid, Row) ->
+  Ans = refine_parallel(Row),
   Pid ! {Ans}.
 
   
@@ -123,7 +122,8 @@ guesses_parallel(M0) ->
  % Ms = [refine_parallel(update_element(M0, I, J, G)) || G <- Guesses],
   Pid = self(),
 %  foreach(spawn(fun () -> refine_task(Pid,M0, I, J, G) end), Guesses),
-  [spawn(fun () -> refine_task(Pid,M0, I, J, G) end) || G <- Guesses],
+  Rows = [update_element(M0, I, J, G) || G <- Guesses],
+  [spawn(fun () -> refine_task(Pid,Row) end) || Row <- Rows],
   Ms = [receive {Ans} -> Ans end || _ <- Guesses],
   SortedGuesses = lists:sort([{hard(M), M} || M <- Ms, not is_wrong(M)]),
   [G || {_, G} <- SortedGuesses].
