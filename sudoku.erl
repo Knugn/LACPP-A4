@@ -31,7 +31,7 @@
 %%
 %% benchmarking code
 %%
--define(EXECUTIONS, 5).
+-define(EXECUTIONS, 40).
 -define(PROBLEMS,  "sudoku_problems.txt").
 -define(SOLUTIONS, "sudoku_solutions.txt").
 
@@ -56,14 +56,16 @@ solve_parallel_task(Pid,Puzzle) ->
   {Name,M} = Puzzle,
   Pid ! {Name,solve_parallel(M)}.
 
-
+spawn_refine_row_task(Pid,R) ->
+  Ref = make_ref(),
+  spawn(fun () -> refine_row_task(Pid,Ref,R), ok end),
+  Ref.
 
 refine_rows_parallel(no_solution) ->
   no_solution;
 refine_rows_parallel(M) ->
   Pid = self(),
-  Refs = [fun () -> Ref = make_ref(),
-	  spawn(refine_row_task(Pid,Ref,R)), Ref end || R <- M],
+  Refs = [spawn_refine_row_task(Pid,R) || R <- M],
   Refined = [receive {Ref,Row} -> Row end || Ref <- Refs],
   case lists:member(no_solution, Refined) of
     true -> no_solution;
@@ -72,18 +74,19 @@ refine_rows_parallel(M) ->
 
 
 refine_row_task(Pid,Ref,Row) ->
-  Pid ! {Ref,refine_row(Row)}.
+  Ans = refine_row(Row),
+  Pid ! {Ref,Ans}.
 
 
 
 refine_parallel(M) ->
   NewM =
-    refine_rows(
+    refine_rows_parallel(
       transpose(
-	refine_rows(
+	refine_rows_parallel(
 	  transpose(
 	    unblocks(
-	      refine_rows(
+	      refine_rows_parallel(
 		blocks(M))))))),
   if M =:= NewM ->
       M;
