@@ -31,7 +31,7 @@
 %%
 %% benchmarking code
 %%
--define(EXECUTIONS, 15).
+-define(EXECUTIONS, 10).
 -define(PROBLEMS,  "sudoku_problems.txt").
 -define(SOLUTIONS, "sudoku_solutions.txt").
 
@@ -39,6 +39,26 @@
 %-define(RowPid, spawn(fun () -> refine_rows_task_master([],[]) end)).
 %%--------------------------DAVID GLÖM INTE DETTTA
 %%
+
+
+
+
+
+%----------------------Paralel benchmark
+-spec benchmarks_parallel() -> {musecs(), bm_results()}.
+benchmarks_parallel() ->
+  {ok, Problems} = file:consult(?PROBLEMS),
+  timer:tc(fun () -> benchmarks_parallel(Problems) end).
+
+-spec benchmarks_parallel([puzzle()]) -> bm_results().
+benchmarks_parallel(Puzzles) ->
+  MasterPid = spawn(fun () -> refine_task_master([],[]) end),
+%% MasterPid = spawn(fun () -> refine_rows_task_master([],[]) end),
+  [{Name, bm(fun() -> solve_parallel(M,MasterPid) end)} || {Name, M} <- Puzzles].
+
+
+
+
 %% solve all puzzles in the (hardcoded) input file
 %%
 -spec solve_all_parallel() -> [{name(), solution()}].
@@ -46,19 +66,29 @@ solve_all_parallel() ->
   Pid = self(),
   {ok, Puzzles} = file:consult(?PROBLEMS),
   %[{spawn(solve_parallel_task(Pid,Puzzle))} || Puzzle <- Puzzles],
+  
+  MasterPid = spawn(fun () -> refine_task_master([],[]) end),
   lists:foreach(fun (Puzzle) ->
-		    spawn(fun () -> solve_parallel_task(Pid,Puzzle) end)
+		    spawn(fun () -> solve_parallel_task(Pid,Puzzle,MasterPid) end)
 		end,
 		Puzzles),
   [receive {Name,M} -> {Name,M} end || {Name,_} <- Puzzles].
-      
 
-
-solve_parallel_task(Pid,Puzzle) ->
+solve_parallel_task(Pid,Puzzle,MasterPid) ->
   {Name,M} = Puzzle,
- % MasterPid = spawn(fun () -> refine_task_master([],[]) end),
-  MasterPid = spawn(fun () -> refine_rows_task_master([],[]) end),
+% MasterPid = spawn(fun () -> refine_rows_task_master([],[]) end),
   Pid ! {Name,solve_parallel(M,MasterPid)}.
+
+
+solve_parallel(M,MasterPid) ->
+  Solution = solve_refined_parallel(refine(fill(M)),MasterPid),
+  case valid_solution(Solution) of
+    true ->
+      Solution;
+    false -> % in correct puzzles should never happen
+      exit({invalid_solution, Solution})
+  end.
+
 
 
 solve_one_parallel([],_) ->
@@ -77,14 +107,85 @@ solve_one_parallel([M|Ms],MasterPid) ->
 %%
 %% solve a Sudoku puzzle-------------------------------------------
 %%
-solve_parallel(M,MasterPid) ->
-  Solution = solve_refined_parallel(refine_parallel(fill(M),MasterPid),MasterPid),
-  case valid_solution(Solution) of
+solve_refined_parallel(M,MasterPid) ->
+  case solved(M) of
     true ->
-      Solution;
-    false -> % in correct puzzles should never happen
-      exit({invalid_solution, Solution})
+      M;
+    false ->
+      solve_one_parallel(guesses_parallel(M,MasterPid),MasterPid)
   end.
+
+
+
+refine_task_master([],_) -> 
+  Pids = [spawn(fun () -> refine_task() end) || _ <- lists:duplicate(16,1)],
+  refine_task_master(Pids,Pids);
+refine_task_master(Pids,[]) -> refine_task_master(Pids,Pids);
+refine_task_master(Pids, [Hd|Tl])   ->
+  receive Work ->
+      Hd ! Work
+  end,
+  refine_task_master(Pids, Tl).
+				   
+
+refine_task() ->
+  receive {Pid, Row} -> 
+      Ans = refine_parallel(Row),
+      Pid ! {Ans}
+  end,
+  refine_task().
+
+  
+
+
+%% given a matrix, guess an element to form a list of possible
+%% extended matrices, easiest problem first.
+
+guesses_parallel(M0,MasterPid) ->
+  {I, J, Guesses} = guess(M0),
+  Pid = self(),
+  Rows = [update_element(M0, I, J, G) || G <- Guesses],
+  lists:foreach(fun (Row) ->
+		    MasterPid ! {Pid, Row}
+		end, Rows),
+  Ms = [receive {Ans} -> Ans end || _ <- Guesses],
+%  Ms = [refine_parallel(update_element(M0, I, J, G),MasterPid) || G <- Guesses],
+  SortedGuesses = lists:sort([{hard(M), M} || M <- Ms, not is_wrong(M)]),
+  [G || {_, G} <- SortedGuesses].
+
+%------------------------------------old---------------------------
+refine_parallel(M) ->
+  NewM =
+    refine_rows(
+      transpose(
+ 	refine_rows(
+ 	  transpose(
+ 	    unblocks(
+ 	      refine_rows(
+ 		blocks(M))))))),
+  if M =:= NewM ->
+      M;
+     true ->
+      refine_parallel(NewM)
+  end.
+
+
+refine_rows_task_master([],_) -> 
+  Pids = [spawn(fun () -> refine_row_task() end) || _ <- lists:duplicate(16,1)],
+  refine_rows_task_master(Pids,Pids);
+refine_rows_task_master(Pids,[]) -> refine_rows_task_master(Pids,Pids);
+refine_rows_task_master(Pids, [Hd|Tl])   ->
+  receive Value ->
+      Hd ! Value
+  end,
+  refine_rows_task_master(Pids, Tl).
+
+refine_row_task() ->
+  receive {Pid,Ref,Row} -> 
+      Ans = refine_row(Row),
+      Pid ! {Ref,Ans}
+  end,
+  refine_row_task().
 
 
 ping_row(Pid,R,MasterPid) ->
@@ -105,105 +206,6 @@ refine_rows_parallel(M,MasterPid) ->
 
 
 
-
-solve_refined_parallel(M,MasterPid) ->
-  case solved(M) of
-    true ->
-      M;
-    false ->
-      solve_one_parallel(guesses_parallel(M,MasterPid),MasterPid)
-  end.
-
-
-
-refine_rows_task_master([],_) -> 
-  Pids = [spawn(fun () -> refine_row_task() end) || _ <- lists:duplicate(16,1)],
-  refine_rows_task_master(Pids,Pids);
-refine_rows_task_master(Pids,[]) -> refine_rows_task_master(Pids,Pids);
-refine_rows_task_master(Pids, [Hd|Tl])   ->
-  receive {Pid,Ref,Row} ->
-      Hd ! {Pid,Ref,Row}
-  end,
-  refine_rows_task_master(Pids, Tl).
-
-refine_row_task() ->
-  receive {Pid,Ref,Row} -> 
-      Ans = refine_row(Row),
-      Pid ! {Ref,Ans}
-  end,
-  refine_row_task().
-
-
-
-%refine_task_master([],_) -> 
-%  Pids = [spawn(fun () -> refine_task() end) || _ <- lists:duplicate(16,1)],
-%  refine_task_master(Pids,Pids);
-%refine_task_master(Pids,[]) -> refine_task_master(Pids,Pids);
-%refine_task_master(Pids, [Hd|Tl])   ->
-%  receive {Pid,Row} ->
-%      Hd ! {Pid,Row}
-%  end,
-%  refine_task_master(Pids, Tl).
-				   
-
-%% refine_task() ->
-%%   receive {Pid, Row} -> 
-%{Pid, Row}
-%%   end,
-%%   Ans = refine_parallel(Row,),
-%%   Pid ! {Ans},
-%%   refine_task().
-
-  
-refine_parallel(M,MasterPid) ->
-  NewM =
-    refine_rows_parallel(
-      transpose(
- 	refine_rows_parallel(
- 	  transpose(
- 	    unblocks(
- 	      refine_rows_parallel(
- 		blocks(M),MasterPid))),MasterPid)),MasterPid),
-  if M =:= NewM ->
-      M;
-     true ->
-      refine_parallel(NewM,MasterPid)
-  end.
-
-
-
-
-%% given a matrix, guess an element to form a list of possible
-%% extended matrices, easiest problem first.
-
-guesses_parallel(M0,MasterPid) ->
-  {I, J, Guesses} = guess(M0),
- % Pid = self(),
- % Rows = [update_element(M0, I, J, G) || G <- Guesses],
- % lists:foreach(fun (Row) ->
-%		    MasterPid ! {Pid, Row}
-%		end, Rows),
- % Ms = [receive {Ans} -> Ans end || _ <- Guesses],
-  Ms = [refine_parallel(update_element(M0, I, J, G),MasterPid) || G <- Guesses],
-  SortedGuesses = lists:sort([{hard(M), M} || M <- Ms, not is_wrong(M)]),
-  [G || {_, G} <- SortedGuesses].
-
-
-
-
-
-
-%----------------------Paralel benchmark
--spec benchmarks_parallel() -> {musecs(), bm_results()}.
-benchmarks_parallel() ->
-  {ok, Problems} = file:consult(?PROBLEMS),
-  timer:tc(fun () -> benchmarks_parallel(Problems) end).
-
--spec benchmarks_parallel([puzzle()]) -> bm_results().
-benchmarks_parallel(Puzzles) ->
-%%%%  MasterPid = spawn(fun () -> refine_task_master([],[]) end),
- MasterPid = spawn(fun () -> refine_rows_task_master([],[]) end),
-  [{Name, bm(fun() -> solve_parallel(M,MasterPid) end)} || {Name, M} <- Puzzles].
 
 %%---------------------------------------------------
 
