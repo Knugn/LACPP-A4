@@ -31,12 +31,10 @@
 %%
 %% benchmarking code
 %%
--define(EXECUTIONS, 10).
+-define(EXECUTIONS, 20).
 -define(PROBLEMS,  "sudoku_problems.txt").
 -define(SOLUTIONS, "sudoku_solutions.txt").
 
-%-define(GuessPid, spawn(fun () -> refine_task_master([],[]) end)).
-%-define(RowPid, spawn(fun () -> refine_rows_task_master([],[]) end)).
 %%--------------------------DAVID GLÖM INTE DETTTA
 %%
 
@@ -118,7 +116,7 @@ solve_refined_parallel(M,MasterPid) ->
 
 
 refine_task_master([],_) -> 
-  Pids = [spawn(fun () -> refine_task() end) || _ <- lists:duplicate(16,1)],
+  Pids = [spawn(fun () -> refine_task() end) || _ <- lists:duplicate(4,1)],
   refine_task_master(Pids,Pids);
 refine_task_master(Pids,[]) -> refine_task_master(Pids,Pids);
 refine_task_master(Pids, [Hd|Tl])   ->
@@ -129,8 +127,8 @@ refine_task_master(Pids, [Hd|Tl])   ->
 				   
 
 refine_task() ->
-  receive {Pid, Row} -> 
-      Ans = refine_parallel(Row),
+  receive {Pid, M0, I, J, G} -> 
+      Ans = refine_parallel(update_element(M0, I, J, G)),
       Pid ! {Ans}
   end,
   refine_task().
@@ -144,10 +142,10 @@ refine_task() ->
 guesses_parallel(M0,MasterPid) ->
   {I, J, Guesses} = guess(M0),
   Pid = self(),
-  Rows = [update_element(M0, I, J, G) || G <- Guesses],
-  lists:foreach(fun (Row) ->
-		    MasterPid ! {Pid, Row}
-		end, Rows),
+  %Rows = [update_element(M0, I, J, G) || G <- Guesses],
+  lists:foreach(fun (G) ->
+		    MasterPid ! {Pid, M0, I, J, G}
+		end, Guesses),
   Ms = [receive {Ans} -> Ans end || _ <- Guesses],
 %  Ms = [refine_parallel(update_element(M0, I, J, G),MasterPid) || G <- Guesses],
   SortedGuesses = lists:sort([{hard(M), M} || M <- Ms, not is_wrong(M)]),
