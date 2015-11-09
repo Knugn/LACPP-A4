@@ -67,21 +67,11 @@ solve_all_parallel() ->
 %%Solves a puzzle
 solve_parallel(M) ->
   Pid = self(),
-  spawn(fun () -> matrix_supervisor(Pid,M) end),
-  receive Ans ->
+  spawn(fun () -> puzzle_supervisor(Pid,{name,M}) end),
+  receive {_Name,Ans} ->
       Ans
   end.
 
-%%Supervisor for solving a puzzle will send result to Pid
-matrix_supervisor(Pid,M) ->
-  Refined = refine(fill(M)),
-  case solved(Refined) of
-    true ->
-      Pid ! Refined;
-    false ->
-      self() ! [Refined],
-      Pid ! worker_supervisor(32)
-  end.
 
 
 puzzle_supervisor(Pid,Puzzle) ->
@@ -92,7 +82,8 @@ puzzle_supervisor(Pid,Puzzle) ->
       Pid ! {Name,Refined};
     false ->
       self() ! [Refined],
-      Pid ! {Name,worker_supervisor(32)}
+      Pid ! {Name,worker_supervisor(32)},
+      exit(kill)
   end.
 
 %%The supervisor for the work, creates a worker pool and redirect work to the created workers
