@@ -10,7 +10,7 @@
 %% -------------------------------------------------------------------
 -module(sudoku).
 
--export([benchmarks/0, solve_all/0, solve/1,solve_all_parallel/0,benchmarks_parallel/0,solve_single_parallel/1,solve_parallel/1]).
+-export([benchmarks/0, solve_all/0, solve/1,solve_all_parallel/0,benchmarks_parallel/0,solve_parallel/1]).
 
 -ifdef(PROPER).
 -include_lib("proper/include/proper.hrl").
@@ -66,17 +66,24 @@ solve_all_parallel() ->
 
 %%Solves a puzzle
 solve_parallel(M) ->
-   Refined = refine(fill(M)),
+  Pid = self(),
+  spawn(fun () -> matrix_supervisor(Pid,M) end),
+  receive Ans ->
+      Ans
+  end.
+
+%%Supervisor for solving a puzzle will send result to Pid
+matrix_supervisor(Pid,M) ->
+  Refined = refine(fill(M)),
   case solved(Refined) of
     true ->
-      Refined;
+      Pid ! Refined;
     false ->
       self() ! [Refined],
-      worker_supervisor(20)
+      Pid ! worker_supervisor(32)
   end.
 
 
-%%Supervisor for solving a puzzle will send result to Pid
 puzzle_supervisor(Pid,Puzzle) ->
   {Name,M} = Puzzle,
   Refined = refine(fill(M)),
