@@ -50,9 +50,9 @@ benchmarks_parallel() ->
 
 -spec benchmarks_parallel([puzzle()]) -> bm_results().
 benchmarks_parallel(Puzzles) ->
-  MasterPid = spawn(fun () -> refine_task_master([],[]) end),
+%%  MasterPid = spawn(fun () -> refine_task_master([],[]) end),
 %% MasterPid = spawn(fun () -> refine_rows_task_master([],[]) end),
-  [{Name, bm(fun() -> solve_parallel(M,MasterPid) end)} || {Name, M} <- Puzzles].
+  [{Name, bm(fun() -> puzzle_supervisor(M) end)} || {Name, M} <- Puzzles].
 
 
 
@@ -126,7 +126,15 @@ solve_refined_parallel(M,MasterPid) ->
       solve_one_parallel(guesses_parallel(M,MasterPid),MasterPid)
   end.
 
-
+puzzle_supervisor(M) ->
+  Refined = refine(fill(M)),
+  case solved(Refined) of
+    true ->
+      Refined;
+    false ->
+      self() ! [Refined],
+      worker_supervisor(10)
+  end.
 puzzle_supervisor(Pid,Puzzle) ->
   {Name,M} = Puzzle,
   Refined = refine(fill(M)),
@@ -135,7 +143,7 @@ puzzle_supervisor(Pid,Puzzle) ->
       Pid ! {Name,Refined};
     false ->
       self() ! [Refined],
-      Pid ! {Name,worker_supervisor(10)}
+      Pid ! {Name,worker_supervisor(16)}
   end.
 
 worker_supervisor(N) -> 
@@ -147,6 +155,8 @@ worker_supervisor(Worker_pids, Pids)   ->
   receive 
    {solution,Solution} ->
     Solution;
+    [] ->
+      worker_supervisor(Worker_pids, Pids);
     Works ->
       worker_supervisor(Worker_pids, Pids,Works)
   end.
@@ -161,26 +171,26 @@ worker_supervisor(Worker_pids, [Phd|Ptl],[Whd|Wtl]) ->
 
 worker(MasterPid) ->
   receive M -> 
-   %   Refined = refine(M),
-      {I, J, Guesses} = guess(M),
-      Ms = [refine(update_element(M, I, J, G)) || G <- Guesses],
-      SortedGuesses = lists:sort([{hard(M0), M0} || M0 <- Ms, not is_wrong(M0)]),
-      Gs = [G || {_, G} <- SortedGuesses],
-      if 
-	Gs == [] ->
-	  worker(MasterPid);
+      worker(MasterPid,M),
+      worker(MasterPid)
+  end.
+worker(MasterPid,M) ->
+  {I, J, Guesses} = guess(M),
+  Ms = [refine(update_element(M, I, J, G)) || G <- Guesses],
+  SortedGuesses = lists:sort([{hard(M0), M0} || M0 <- Ms, not is_wrong(M0)]),
+  Gs = [G || {_, G} <- SortedGuesses],
+  if 
+    Gs == [] ->
+      ok;
+    true ->
+      case solved(hd(Gs)) of
 	true ->
-	  case solved(hd(Gs)) of
-	    true ->
-	      MasterPid ! {solution,hd(Gs)};
-	    false ->
-	      MasterPid ! Gs,
-	      worker(MasterPid)
-	  end
+	  MasterPid ! {solution,hd(Gs)};
+	false ->
+	  MasterPid ! tl(Gs),
+	  worker(MasterPid,hd(Gs))
       end
   end.
-
-
 
 refine_task_master([],_) -> 
   Pids = [spawn_link(fun () -> refine_task() end) || _ <- lists:duplicate(4,1)],
