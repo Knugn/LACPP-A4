@@ -51,26 +51,20 @@ benchmarks_parallel(Puzzles) ->
 
 
 %% solve all puzzles in the (hardcoded) input file
-%%
 -spec solve_all_parallel() -> [{name(), solution()}].
 solve_all_parallel() ->
   Pid = self(),
   {ok, Puzzles} = file:consult(?PROBLEMS),
  lists:foreach(fun (Puzzle) ->
-		    spawn(fun () -> puzzle_supervisor(Pid,Puzzle) end)
+		    spawn(fun () -> solve_parallel_task(Pid,Puzzle) end)
 		end,
 		Puzzles),
  [receive {Name,M} -> {Name,M} end || {Name,_} <- Puzzles].
 
 
 
-solve_parallel_task(Pid,Puzzle) ->
-  {Name,M} = Puzzle,
-  MasterPid = spawn(fun () -> refine_rows_task_master([],[]) end),
-  Pid ! {Name,solve_parallel(M,MasterPid)}.
 
-
-
+%%Solves a puzzle
 solve_parallel(M) ->
    Refined = refine(fill(M)),
   case solved(Refined) of
@@ -82,7 +76,7 @@ solve_parallel(M) ->
   end.
 
 
-%%Supervisor for solving a puzzle 
+%%Supervisor for solving a puzzle will send result to Pid
 puzzle_supervisor(Pid,Puzzle) ->
   {Name,M} = Puzzle,
   Refined = refine(fill(M)),
@@ -147,6 +141,13 @@ worker(MasterPid,M) ->
 
 
 %------------------------------------old---------------------------------------------------------------------
+
+
+
+solve_parallel_task(Pid,Puzzle) ->
+  {Name,M} = Puzzle,
+ % MasterPid = spawn(fun () -> refine_rows_task_master([],[]) end),
+  Pid ! {Name,solve(M)}.
 
 
 
