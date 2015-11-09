@@ -10,7 +10,7 @@
 %% -------------------------------------------------------------------
 -module(sudoku).
 
--export([benchmarks/0, solve_all/0, solve/1,solve_all_parallel/0,benchmarks_parallel/0]).
+-export([benchmarks/0, solve_all/0, solve/1,solve_all_parallel/0,benchmarks_parallel/0,worker/1,solve_single_parallel/1 ]).
 
 -ifdef(PROPER).
 -include_lib("proper/include/proper.hrl").
@@ -35,7 +35,7 @@
 -define(PROBLEMS,  "sudoku_problems.txt").
 -define(SOLUTIONS, "sudoku_solutions.txt").
 
-%%--------------------------DAVID GLÖM INTE DETTTA
+%%--------------------------
 %%
 
 
@@ -63,18 +63,31 @@ benchmarks_parallel(Puzzles) ->
 solve_all_parallel() ->
   Pid = self(),
   {ok, Puzzles} = file:consult(?PROBLEMS),
-  %[{spawn(solve_parallel_task(Pid,Puzzle))} || Puzzle <- Puzzles],
-  
-  MasterPid = spawn(fun () -> refine_task_master([],[]) end),
-  lists:foreach(fun (Puzzle) ->
-		    spawn(fun () -> solve_parallel_task(Pid,Puzzle,MasterPid) end)
+ % spawn(fun () -> puzzle_supervisor(Pid,hd(tl(Puzzles))) end),
+ lists:foreach(fun (Puzzle) ->
+		    spawn(fun () -> puzzle_supervisor(Pid,Puzzle) end)
 		end,
 		Puzzles),
-  [receive {Name,M} -> {Name,M} end || {Name,_} <- Puzzles].
+ [receive {Name,M} -> {Name,M} end || {Name,_} <- Puzzles].
+%  receive {Name,M} ->
+ %     {Name,M}
+  %end.
 
-solve_parallel_task(Pid,Puzzle,MasterPid) ->
+
+%% solve all puzzles in the (hardcoded) input file
+%%
+
+solve_single_parallel(N) ->
+  Pid = self(),
+  {ok, Puzzles} = file:consult(?PROBLEMS),
+  spawn(fun () -> puzzle_supervisor(Pid,lists:nth(Puzzles,N+1)) end),
+  receive {Name,M} ->
+     {Name,M}
+  end.
+
+solve_parallel_task(Pid,Puzzle) ->
   {Name,M} = Puzzle,
-% MasterPid = spawn(fun () -> refine_rows_task_master([],[]) end),
+  MasterPid = spawn(fun () -> refine_rows_task_master([],[]) end),
   Pid ! {Name,solve_parallel(M,MasterPid)}.
 
 
@@ -114,9 +127,63 @@ solve_refined_parallel(M,MasterPid) ->
   end.
 
 
+puzzle_supervisor(Pid,Puzzle) ->
+  {Name,M} = Puzzle,
+  Refined = refine(fill(M)),
+  case solved(Refined) of
+    true ->
+      Pid ! {Name,Refined};
+    false ->
+      self() ! [Refined],
+      Pid ! {Name,worker_supervisor(10)}
+  end.
+
+worker_supervisor(N) -> 
+  MasterPid = self(),
+  Worker_pids = [spawn_link(fun () -> worker(MasterPid) end) || _ <- lists:duplicate(N,1)],
+  worker_supervisor(Worker_pids,Worker_pids).
+worker_supervisor(Worker_pids,[]) -> worker_supervisor(Worker_pids,Worker_pids);
+worker_supervisor(Worker_pids, Pids)   ->
+  receive 
+   {solution,Solution} ->
+    Solution;
+    Works ->
+      worker_supervisor(Worker_pids, Pids,Works)
+  end.
+%Abomination
+worker_supervisor(Worker_pids, Pids,[]) ->
+  worker_supervisor(Worker_pids, Pids);
+worker_supervisor(Worker_pids, [],Works) ->
+  worker_supervisor(Worker_pids,Worker_pids, Works);
+worker_supervisor(Worker_pids, [Phd|Ptl],[Whd|Wtl]) ->
+  Phd ! Whd,
+  worker_supervisor(Worker_pids,Ptl,Wtl).
+
+worker(MasterPid) ->
+  receive M -> 
+   %   Refined = refine(M),
+      {I, J, Guesses} = guess(M),
+      Ms = [refine(update_element(M, I, J, G)) || G <- Guesses],
+      SortedGuesses = lists:sort([{hard(M0), M0} || M0 <- Ms, not is_wrong(M0)]),
+      Gs = [G || {_, G} <- SortedGuesses],
+      if 
+	Gs == [] ->
+	  worker(MasterPid);
+	true ->
+	  case solved(hd(Gs)) of
+	    true ->
+	      MasterPid ! {solution,hd(Gs)};
+	    false ->
+	      MasterPid ! Gs,
+	      worker(MasterPid)
+	  end
+      end
+  end.
+
+
 
 refine_task_master([],_) -> 
-  Pids = [spawn(fun () -> refine_task() end) || _ <- lists:duplicate(4,1)],
+  Pids = [spawn_link(fun () -> refine_task() end) || _ <- lists:duplicate(4,1)],
   refine_task_master(Pids,Pids);
 refine_task_master(Pids,[]) -> refine_task_master(Pids,Pids);
 refine_task_master(Pids, [Hd|Tl])   ->
