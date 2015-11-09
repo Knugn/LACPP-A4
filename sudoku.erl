@@ -10,7 +10,7 @@
 %% -------------------------------------------------------------------
 -module(sudoku).
 
--export([benchmarks/0, solve_all/0, solve/1,solve_all_parallel/0,benchmarks_parallel/0,worker/1,solve_single_parallel/1 ]).
+-export([benchmarks/0, solve_all/0, solve/1,solve_all_parallel/0,benchmarks_parallel/0,solve_single_parallel/1,solve_parallel/1]).
 
 -ifdef(PROPER).
 -include_lib("proper/include/proper.hrl").
@@ -35,13 +35,6 @@
 -define(PROBLEMS,  "sudoku_problems.txt").
 -define(SOLUTIONS, "sudoku_solutions.txt").
 
-%%--------------------------
-%%
-
-
-
-
-
 %----------------------Paralel benchmark
 -spec benchmarks_parallel() -> {musecs(), bm_results()}.
 benchmarks_parallel() ->
@@ -52,7 +45,7 @@ benchmarks_parallel() ->
 benchmarks_parallel(Puzzles) ->
 %%  MasterPid = spawn(fun () -> refine_task_master([],[]) end),
 %% MasterPid = spawn(fun () -> refine_rows_task_master([],[]) end),
-  [{Name, bm(fun() -> puzzle_supervisor(M) end)} || {Name, M} <- Puzzles].
+  [{Name, bm(fun() -> solve_parallel(M) end)} || {Name, M} <- Puzzles].
 
 
 
@@ -63,32 +56,98 @@ benchmarks_parallel(Puzzles) ->
 solve_all_parallel() ->
   Pid = self(),
   {ok, Puzzles} = file:consult(?PROBLEMS),
- % spawn(fun () -> puzzle_supervisor(Pid,hd(tl(Puzzles))) end),
  lists:foreach(fun (Puzzle) ->
 		    spawn(fun () -> puzzle_supervisor(Pid,Puzzle) end)
 		end,
 		Puzzles),
  [receive {Name,M} -> {Name,M} end || {Name,_} <- Puzzles].
-%  receive {Name,M} ->
- %     {Name,M}
-  %end.
 
 
-%% solve all puzzles in the (hardcoded) input file
-%%
-
-solve_single_parallel(N) ->
-  Pid = self(),
-  {ok, Puzzles} = file:consult(?PROBLEMS),
-  spawn(fun () -> puzzle_supervisor(Pid,lists:nth(Puzzles,N+1)) end),
-  receive {Name,M} ->
-     {Name,M}
-  end.
 
 solve_parallel_task(Pid,Puzzle) ->
   {Name,M} = Puzzle,
   MasterPid = spawn(fun () -> refine_rows_task_master([],[]) end),
   Pid ! {Name,solve_parallel(M,MasterPid)}.
+
+
+
+solve_parallel(M) ->
+   Refined = refine(fill(M)),
+  case solved(Refined) of
+    true ->
+      Refined;
+    false ->
+      self() ! [Refined],
+      worker_supervisor(20)
+  end.
+
+
+%%Supervisor for solving a puzzle 
+puzzle_supervisor(Pid,Puzzle) ->
+  {Name,M} = Puzzle,
+  Refined = refine(fill(M)),
+  case solved(Refined) of
+    true ->
+      Pid ! {Name,Refined};
+    false ->
+      self() ! [Refined],
+      Pid ! {Name,worker_supervisor(32)}
+  end.
+
+%%The supervisor for the work, creates a worker pool and redirect work to the created workers
+worker_supervisor(N) -> 
+  MasterPid = self(),
+  Worker_pids = [spawn_link(fun () -> worker(MasterPid) end) || _ <- lists:duplicate(N,1)],
+  worker_supervisor(Worker_pids,Worker_pids).
+worker_supervisor(Worker_pids,[]) -> worker_supervisor(Worker_pids,Worker_pids);
+worker_supervisor(Worker_pids, Pids)   ->
+  receive 
+   {solution,Solution} ->
+    Solution;
+    Works ->
+      worker_supervisor(Worker_pids, Pids,Works)
+  end.
+%Abomination
+worker_supervisor(Worker_pids, Pids,[]) ->
+  worker_supervisor(Worker_pids, Pids);
+worker_supervisor(Worker_pids, [],Works) ->
+  worker_supervisor(Worker_pids,Worker_pids, Works);
+worker_supervisor(Worker_pids, [Phd|Ptl],[Whd|Wtl]) ->
+  Phd ! Whd,
+  worker_supervisor(Worker_pids,Ptl,Wtl).
+
+
+%%Worker refines the Matrix, if there was no solution the ts sends the possible guesses to the supervisor except one which it tries to solve
+worker(MasterPid) ->
+  receive M -> 
+      worker(MasterPid,M),
+      worker(MasterPid)
+  end.
+worker(MasterPid,M) ->
+  {I, J, Guesses} = guess(M),
+  Ms = [refine(update_element(M, I, J, G)) || G <- Guesses],
+  SortedGuesses = lists:sort([{hard(M0), M0} || M0 <- Ms, not is_wrong(M0)]),
+  Gs = [G || {_, G} <- SortedGuesses],
+  if 
+    Gs == [] ->
+      ok;
+    true ->
+      case solved(hd(Gs)) of
+	true ->
+	  MasterPid ! {solution,hd(Gs)};
+	false ->
+	  MasterPid ! tl(Gs),
+	  worker(MasterPid,hd(Gs))
+      end
+  end.
+
+
+
+
+
+
+%------------------------------------old---------------------------------------------------------------------
+
 
 
 solve_parallel(M,MasterPid) ->
@@ -99,7 +158,6 @@ solve_parallel(M,MasterPid) ->
     false -> % in correct puzzles should never happen
       exit({invalid_solution, Solution})
   end.
-
 
 
 solve_one_parallel([],_) ->
@@ -126,71 +184,49 @@ solve_refined_parallel(M,MasterPid) ->
       solve_one_parallel(guesses_parallel(M,MasterPid),MasterPid)
   end.
 
-puzzle_supervisor(M) ->
-  Refined = refine(fill(M)),
-  case solved(Refined) of
-    true ->
-      Refined;
-    false ->
-      self() ! [Refined],
-      worker_supervisor(10)
-  end.
-puzzle_supervisor(Pid,Puzzle) ->
-  {Name,M} = Puzzle,
-  Refined = refine(fill(M)),
-  case solved(Refined) of
-    true ->
-      Pid ! {Name,Refined};
-    false ->
-      self() ! [Refined],
-      Pid ! {Name,worker_supervisor(32)}
+%% given a matrix, guess an element to form a list of possible
+%% extended matrices, easiest problem first.
+
+guesses_parallel(M0,MasterPid) ->
+  {I, J, Guesses} = guess(M0),
+  Pid = self(),
+  %Rows = [update_element(M0, I, J, G) || G <- Guesses],
+  lists:foreach(fun (G) ->
+		    MasterPid ! {Pid, M0, I, J, G}
+		end, Guesses),
+  Ms = [receive {Ans} -> Ans end || _ <- Guesses],
+%  Ms = [refine_parallel(update_element(M0, I, J, G),MasterPid) || G <- Guesses],
+  SortedGuesses = lists:sort([{hard(M), M} || M <- Ms, not is_wrong(M)]),
+  [G || {_, G} <- SortedGuesses].
+
+
+
+refine_parallel(M) ->
+  NewM =
+    refine_rows(
+      transpose(
+ 	refine_rows(
+ 	  transpose(
+ 	    unblocks(
+ 	      refine_rows(
+ 		blocks(M))))))),
+  if M =:= NewM ->
+      M;
+     true ->
+      refine_parallel(NewM)
   end.
 
-worker_supervisor(N) -> 
-  MasterPid = self(),
-  Worker_pids = [spawn_link(fun () -> worker(MasterPid) end) || _ <- lists:duplicate(N,1)],
-  worker_supervisor(Worker_pids,Worker_pids).
-worker_supervisor(Worker_pids,[]) -> worker_supervisor(Worker_pids,Worker_pids);
-worker_supervisor(Worker_pids, Pids)   ->
-  receive 
-   {solution,Solution} ->
-    Solution;
-    [] ->
-      worker_supervisor(Worker_pids, Pids);
-    Works ->
-      worker_supervisor(Worker_pids, Pids,Works)
-  end.
-%Abomination
-worker_supervisor(Worker_pids, Pids,[]) ->
-  worker_supervisor(Worker_pids, Pids);
-worker_supervisor(Worker_pids, [],Works) ->
-  worker_supervisor(Worker_pids,Worker_pids, Works);
-worker_supervisor(Worker_pids, [Phd|Ptl],[Whd|Wtl]) ->
-  Phd ! Whd,
-  worker_supervisor(Worker_pids,Ptl,Wtl).
+%% solve all puzzles in the (hardcoded) input file
+%%
 
-worker(MasterPid) ->
-  receive M -> 
-      worker(MasterPid,M),
-      worker(MasterPid)
+solve_single_parallel(N) ->
+  Pid = self(),
+  {ok, Puzzles} = file:consult(?PROBLEMS),
+  spawn(fun () -> puzzle_supervisor(Pid,lists:nth(Puzzles,N+1)) end),
+  receive {Name,M} ->
+     {Name,M}
   end.
-worker(MasterPid,M) ->
-  {I, J, Guesses} = guess(M),
-  Ms = [refine(update_element(M, I, J, G)) || G <- Guesses],
-  SortedGuesses = lists:sort([{hard(M0), M0} || M0 <- Ms, not is_wrong(M0)]),
-  Gs = [G || {_, G} <- SortedGuesses],
-  if 
-    Gs == [] ->
-      ok;
-    true ->
-      case solved(hd(Gs)) of
-	true ->
-	  MasterPid ! {solution,hd(Gs)};
-	false ->
-	  MasterPid ! tl(Gs),
-	  worker(MasterPid,hd(Gs))
-      end
-  end.
+
 
 refine_task_master([],_) -> 
   Pids = [spawn_link(fun () -> refine_task() end) || _ <- lists:duplicate(4,1)],
@@ -209,41 +245,6 @@ refine_task() ->
       Pid ! {Ans}
   end,
   refine_task().
-
-  
-
-
-%% given a matrix, guess an element to form a list of possible
-%% extended matrices, easiest problem first.
-
-guesses_parallel(M0,MasterPid) ->
-  {I, J, Guesses} = guess(M0),
-  Pid = self(),
-  %Rows = [update_element(M0, I, J, G) || G <- Guesses],
-  lists:foreach(fun (G) ->
-		    MasterPid ! {Pid, M0, I, J, G}
-		end, Guesses),
-  Ms = [receive {Ans} -> Ans end || _ <- Guesses],
-%  Ms = [refine_parallel(update_element(M0, I, J, G),MasterPid) || G <- Guesses],
-  SortedGuesses = lists:sort([{hard(M), M} || M <- Ms, not is_wrong(M)]),
-  [G || {_, G} <- SortedGuesses].
-
-%------------------------------------old---------------------------
-refine_parallel(M) ->
-  NewM =
-    refine_rows(
-      transpose(
- 	refine_rows(
- 	  transpose(
- 	    unblocks(
- 	      refine_rows(
- 		blocks(M))))))),
-  if M =:= NewM ->
-      M;
-     true ->
-      refine_parallel(NewM)
-  end.
-
 
 refine_rows_task_master([],_) -> 
   Pids = [spawn(fun () -> refine_row_task() end) || _ <- lists:duplicate(16,1)],
