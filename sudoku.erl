@@ -31,7 +31,7 @@
 %%
 %% benchmarking code
 %%
--define(EXECUTIONS, 30).
+-define(EXECUTIONS, 40).
 -define(PROBLEMS,  "sudoku_problems.txt").
 -define(SOLUTIONS, "sudoku_solutions.txt").
 
