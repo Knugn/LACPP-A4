@@ -82,7 +82,7 @@ puzzle_supervisor(Pid,Puzzle) ->
       Pid ! {Name,Refined};
     false ->
       self() ! [Refined],
-      Pid ! {Name,worker_supervisor(32)},
+      Pid ! {Name,worker_supervisor(16)},
       exit(kill)
   end.
 
